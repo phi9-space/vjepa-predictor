@@ -113,6 +113,9 @@ def train():
             try:
                 z_batch = next(train_iter)
             except StopIteration:
+                logger.info("Dataset stream exhausted! Dynamically pulling latest files from HuggingFace...")
+                # Recreate the dataloader with a new seed to fetch any newly uploaded parquet shards
+                train_loader, val_loader = get_dataloaders(batch_size=cfg.BATCH_SIZE, num_workers=4, seed=epoch+step)
                 train_iter = iter(train_loader)
                 z_batch = next(train_iter)
                 

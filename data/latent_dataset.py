@@ -16,9 +16,9 @@ class Ego10kLatentStream(IterableDataset):
         self.epsilon = epsilon
         self.tau_kinetic = tau_kinetic
         
-        # Load streaming dataset from HF
-        # The parquet files are all in train split by default based on our upload structure
+        # Load streaming dataset from HF and shuffle it
         self.hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, split="train", streaming=True)
+        self.hf_dataset = self.hf_dataset.shuffle(seed=seed, buffer_size=1000)
         
         # We perform a pseudo-split for validation using deterministic hashing of the tubelet_idx or just skipping
         # But wait, HF streaming datasets can be sharded.
@@ -83,12 +83,12 @@ class Ego10kLatentStream(IterableDataset):
             # Actually, returning z_full [768, 32, 24, 24] is cleanest and allows the trainer to do P and Q natively
             yield z
 
-def get_dataloaders(batch_size: int = 8, num_workers: int = 4):
+def get_dataloaders(batch_size: int = 8, num_workers: int = 4, seed: int = 42):
     """
     Constructs the train and validation dataloaders.
     """
-    train_ds = Ego10kLatentStream(split="train")
-    val_ds = Ego10kLatentStream(split="val")
+    train_ds = Ego10kLatentStream(split="train", seed=seed)
+    val_ds = Ego10kLatentStream(split="val", seed=seed)
     
     # prefetch_factor ensures data is heavily buffered in RAM so the GPU is never starved
     train_loader = DataLoader(
