@@ -163,7 +163,7 @@ PATIENCE = 10                          # early stopping patience (§5.D)
 GRAD_CLIP_NORM = 10.0                  # gradient clipping max norm
 
 # Data budget
-TUBELETS_PER_EPOCH = 200               # IID random sample per epoch
+TUBELETS_PER_EPOCH = 5000              # IID random sample per virtual epoch
 TRAIN_VAL_SPLIT = 0.9                  # 90% train, 10% validation (video-level)
 
 # Adaptive Volatility-Gated Huber Loss (§5.B)
