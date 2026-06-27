@@ -73,53 +73,61 @@ def run_extraction(target_count: int = 25000, device: str = "cuda:0", shard_idx:
     t_start = time.time()
     local_encoded_this_run = 0
     
-    for tubelet_frames, meta, start_idx in ego10k_video_stream(factories=factories):
+    for video_frames, meta in ego10k_video_stream(factories=factories):
         if local_encoded_this_run >= local_target:
             logger.info("Shard target reached! Stopping.")
             break
             
-        t_tubelet_start = time.time()
-        
-        factory_id = meta.get("factory_id", "unknown")
-        worker_id = meta.get("worker_id", "unknown")
-        video_index = meta.get("video_index", -1)
-        latent_id = (factory_id, worker_id, video_index, start_idx)
-        
-        if latent_id in cached_ids:
-            continue
+        num_frames = video_frames.shape[0]
+        # Chunk the video into 16-frame tubelets
+        for start_idx in range(0, num_frames - cfg.TUBELET_RAW_FRAMES + 1, cfg.TUBELET_RAW_FRAMES):
+            if local_encoded_this_run >= local_target:
+                break
+                
+            tubelet_frames = video_frames[start_idx : start_idx + cfg.TUBELET_RAW_FRAMES]
             
-        # 1. Compute m_flow (optical flow magnitude)
-        t_raft = time.time()
-        m_flow = compute_flow_magnitude_batch(raft_model, tubelet_frames, device=device)
-        t_raft_end = time.time()
-        
-        # 2. Compute Latent via V-JEPA
-        z = encoder.encode(tubelet_frames, return_on_gpu=False)
-        z_np = z.numpy()
-        t_vjepa_end = time.time()
-        
-        # 3. Cache the Latent
-        cache.add(
-            factory_id=factory_id,
-            worker_id=worker_id,
-            video_index=video_index,
-            tubelet_start=start_idx,
-            latent=z_np,
-            tag="iid_sample",
-            m_flow=m_flow
-        )
-        
-        cached_ids.add(latent_id)
-        local_encoded_this_run += 1
-        
-        t_total = time.time() - t_tubelet_start
-        logger.info(
-            f"Encoded {local_encoded_this_run:04d}/{local_target:04d} | "
-            f"Video: {factory_id}/{worker_id} | "
-            f"RAFT: {t_raft_end - t_raft:.2f}s | "
-            f"VJEPA: {t_vjepa_end - t_raft_end:.2f}s | "
-            f"Total: {t_total:.2f}s"
-        )
+            t_tubelet_start = time.time()
+            
+            factory_id = meta.get("factory_id", "unknown")
+            worker_id = meta.get("worker_id", "unknown")
+            video_index = meta.get("video_index", -1)
+            latent_id = (factory_id, worker_id, video_index, start_idx)
+            
+            if latent_id in cached_ids:
+                continue
+                
+            # 1. Compute m_flow (optical flow magnitude)
+            t_raft = time.time()
+            m_flow = compute_flow_magnitude_batch(raft_model, tubelet_frames, device=device)
+            t_raft_end = time.time()
+            
+            # 2. Compute Latent via V-JEPA
+            z = encoder.encode(tubelet_frames, return_on_gpu=False)
+            z_np = z.numpy()
+            t_vjepa_end = time.time()
+            
+            # 3. Cache the Latent
+            cache.add(
+                factory_id=factory_id,
+                worker_id=worker_id,
+                video_index=video_index,
+                tubelet_start=start_idx,
+                latent=z_np,
+                tag="iid_sample",
+                m_flow=m_flow
+            )
+            
+            cached_ids.add(latent_id)
+            local_encoded_this_run += 1
+            
+            t_total = time.time() - t_tubelet_start
+            logger.info(
+                f"Encoded {local_encoded_this_run:04d}/{local_target:04d} | "
+                f"Video: {factory_id}/{worker_id} | Start: {start_idx:04d} | "
+                f"RAFT: {t_raft_end - t_raft:.2f}s | "
+                f"VJEPA: {t_vjepa_end - t_raft_end:.2f}s | "
+                f"Total: {t_total:.2f}s"
+            )
             
     # Flush pending parquets
     cache.close()
