@@ -28,7 +28,7 @@ class CNNPredictor(nn.Module):
             stride=1,
             padding=(0, 1, 1), # No temporal padding here (handled by temporal_pad)
             groups=768,
-            bias=False
+            bias=True
         )
         self.activation = nn.SiLU()
 
@@ -40,7 +40,7 @@ class CNNPredictor(nn.Module):
             kernel_size=(1, 1, 1),
             stride=1,
             padding=0,
-            bias=False
+            bias=True
         )
 
         # The Retraction Map (Scalar Gated Integration)
@@ -51,6 +51,11 @@ class CNNPredictor(nn.Module):
             kernel_size=(1, 1, 1),
             bias=True
         )
+        
+        # Init: normal_(std=0.01) keeps 99.7% of pre-sigmoid in [-0.03, 0.03]
+        # This forces the sigmoid to ~0.5 (balanced initial blend)
+        nn.init.normal_(self.w_gate.weight, mean=0.0, std=0.01)
+        nn.init.constant_(self.w_gate.bias, 0.0)
 
     def forward(self, z_in: torch.Tensor) -> torch.Tensor:
         """
