@@ -18,14 +18,17 @@ from pathlib import Path
 # Paths
 # ═══════════════════════════════════════════════════════════════════════════
 
-# V-JEPA model code — needed for `from app.vjepa_2_1.models import ...`
-VJEPA_CODE_ROOT = Path("/home/raunak114/Desktop/Phi-Models/Phi0/vjepa/vjepa2")
+import os
 
-# V-JEPA ViT-Base checkpoint (80M params, embed_dim=768)
-VJEPA_CHECKPOINT = Path(
-    "/home/raunak114/Desktop/Phi-Models/Phi0/checkpoints/"
-    "vjepa2_1_vitb_dist_vitG_384.pt"
-)
+# Base directory (the directory containing v2, which is 'the Compression problem')
+BASE_DIR = Path(__file__).parent.parent
+
+# V-JEPA model code
+VJEPA_CODE_ROOT = Path(os.environ.get("VJEPA_CODE_ROOT", BASE_DIR.parent / "vjepa" / "vjepa2"))
+
+# V-JEPA ViT-Base checkpoint
+VJEPA_CHECKPOINT = Path(os.environ.get("VJEPA_CHECKPOINT", BASE_DIR.parent / "checkpoints" / "vjepa2_1_vitb_dist_vitG_384.pt"))
+VJEPA_DOWNLOAD_URL = "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt"
 
 # Project root (the Compression problem/v2/)
 V2_ROOT = Path(__file__).resolve().parent

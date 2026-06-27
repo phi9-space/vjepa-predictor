@@ -468,20 +468,7 @@ def main():
     # ── 5. V-JEPA encode timing ──
     encoder, z_cpu = benchmark_vjepa_encode(tubelet, device)
 
-    # ── 6. ε computation timing ──
-    log.info("══════════════════════════════════════════════")
-    log.info("  ε computation timing (CPU)")
-    log.info("══════════════════════════════════════════════")
-    log.info("  Simulating 10 static tubelets (would be 1000 in production)")
-
-    from v2.calibration import _compute_epsilon
-    fake_latents = [z_cpu.numpy() + np.random.randn(*z_cpu.shape).astype(np.float32) * 0.001
-                    for _ in range(10)]
-    with Timer("  _compute_epsilon() [10 tubelets, CPU numpy]"):
-        eps, stats = _compute_epsilon(fake_latents)
-    log.info(f"  ε = {eps:.6f}")
-    log.info(f"  Stats: {json.dumps({k: round(v, 6) for k, v in stats.items() if isinstance(v, float)}, indent=4)}")
-
+    # ── 6. Completed ──
     log.info("")
     log.info("╔══════════════════════════════════════════════╗")
     log.info("║              SMOKE TEST COMPLETE             ║")

@@ -159,14 +159,14 @@ class VJEPAEncoder:
         self.fp32 = fp32
         self.dtype = torch.float32 if fp32 else torch.bfloat16
 
-        ckpt_path = Path(checkpoint_path) if checkpoint_path else cfg.VJEPA_CHECKPOINT
-        if not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"V-JEPA checkpoint not found: {ckpt_path}\n"
-                f"Expected: {cfg.VJEPA_CHECKPOINT}"
-            )
+        self.checkpoint_path = Path(checkpoint_path) if checkpoint_path else Path(cfg.VJEPA_CHECKPOINT)
+        if not self.checkpoint_path.exists():
+            logger.info(f"V-JEPA checkpoint not found locally. Downloading from {cfg.VJEPA_DOWNLOAD_URL}...")
+            self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.hub.download_url_to_file(cfg.VJEPA_DOWNLOAD_URL, str(self.checkpoint_path))
+            logger.info("Download complete.")
 
-        self.model = self._load_model(ckpt_path)
+        self.model = self._load_model(self.checkpoint_path)
 
         n_params = sum(p.numel() for p in self.model.parameters())
         dtype_name = "FP32" if fp32 else "BF16"
