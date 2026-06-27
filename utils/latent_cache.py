@@ -39,7 +39,10 @@ class LatentCache:
             self.api.repo_info(repo_id=self.repo_id, repo_type="dataset")
         except Exception:
             logger.info(f"Creating HuggingFace dataset repo: {self.repo_id}")
-            self.api.create_repo(repo_id=self.repo_id, repo_type="dataset", private=True)
+            try:
+                self.api.create_repo(repo_id=self.repo_id, repo_type="dataset", private=True, exist_ok=True)
+            except Exception as e:
+                logger.info(f"Repo might already exist or error occurred: {e}")
 
         self.buffer = []
         self.current_buffer_bytes = 0

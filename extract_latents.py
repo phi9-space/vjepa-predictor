@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import logging
 import time
+import os
+from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+
+# Load env before any internal imports to ensure config picks up tokens
+load_dotenv(Path(__file__).parent / ".env")
 
 import torch
 
