@@ -156,7 +156,8 @@ class LatentCache:
                 local_path.unlink(missing_ok=True)
                 logger.debug(f"Successfully uploaded and deleted {local_path.name}")
             except Exception as e:
-                logger.error(f"Failed to upload {local_path.name}: {e}")
+                logger.error(f"Failed to upload {local_path.name}: {e}. Backing off for 15s...")
+                time.sleep(15)
                 # Re-queue on failure
                 self.upload_queue.put((local_path, hf_path))
                 
