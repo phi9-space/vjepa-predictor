@@ -49,7 +49,7 @@ def decode_video(
     Args:
         video_bytes:      raw MP4 file bytes
         target_fps:       frames per second to extract (default 4)
-        shorter_side_res: target size for the shorter side (default 480)
+        shorter_side_res: target size for the shorter side before crop (default cfg.SHORTER_SIDE_SIZE)
 
     Returns:
         np.ndarray of shape [T, H, W, 3] uint8 RGB,
@@ -69,45 +69,13 @@ def decode_video(
         return None
 
     try:
-        # First, probe the video to get its actual dimensions to calculate new dims.
-        # We need this to parse the raw RGB24 bytes from ffmpeg stdout.
-        proc_probe = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height",
-                "-of", "json",
-                tmp_path
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        
-        if proc_probe.returncode != 0:
-            logger.debug("ffprobe failed on video")
-            return None
-            
-        probe_info = json.loads(proc_probe.stdout)
-        orig_w = probe_info["streams"][0]["width"]
-        orig_h = probe_info["streams"][0]["height"]
-        
-        # Calculate expected dims after shorter-side scaling
-        if orig_w < orig_h:
-            # Vertical video: width is shorter
-            expected_w = shorter_side_res
-            expected_h = int(orig_h * (shorter_side_res / orig_w))
-        else:
-            # Horizontal or square video: height is shorter
-            expected_h = shorter_side_res
-            expected_w = int(orig_w * (shorter_side_res / orig_h))
-            
-        # ffmpeg requires even dimensions for many pixel formats
-        if expected_w % 2 != 0: expected_w += 1
-        if expected_h % 2 != 0: expected_h += 1
+        # We enforce a strict center crop output from ffmpeg.
+        expected_w = cfg.IMAGE_SIZE
+        expected_h = cfg.IMAGE_SIZE
 
-        # The scale filter string forcing the exact dimensions we calculated
-        scale_filter = f"fps={target_fps},scale={expected_w}:{expected_h}"
+        # The scale filter string: first scale shorter side to shorter_side_res preserving aspect ratio,
+        # then center crop to expected_w : expected_h
+        scale_filter = f"fps={target_fps},scale='if(gt(iw,ih),-1,{shorter_side_res}):if(gt(iw,ih),{shorter_side_res},-1)',crop={expected_w}:{expected_h}"
 
         # Run ffmpeg to decode with NVDEC hardware acceleration
         proc = subprocess.run(
@@ -207,7 +175,7 @@ def ego10k_video_stream(
         factories:              list of factory IDs to sample from (default: cfg.DEFAULT_FACTORIES)
         max_videos_per_factory: max videos to pull per factory
         hf_token:               HuggingFace token (default: cfg.HF_TOKEN)
-        shorter_side_res:       shorter-side decode resolution (default 480)
+        shorter_side_res:       shorter-side decode resolution (default cfg.SHORTER_SIDE_SIZE)
         shuffle_seed:           RNG seed for per-factory shuffling
 
     Yields:
@@ -351,7 +319,7 @@ def make_tubelet_stream_factory(
     factories: list = None,
     max_videos_per_factory: int = cfg.MAX_VIDEOS_PER_FACTORY,
     hf_token: str = None,
-    shorter_side_res: int = 480,
+    shorter_side_res: int = cfg.SHORTER_SIDE_SIZE,
     shuffle_seed: int = cfg.SEED,
     window_size: int = cfg.TUBELET_RAW_FRAMES,
     stride: int = cfg.TUBELET_RAW_FRAMES,
@@ -379,7 +347,7 @@ def make_tubelet_stream_factory(
         factories:              factory IDs to sample (default: cfg.DEFAULT_FACTORIES)
         max_videos_per_factory: max videos per factory
         hf_token:               HuggingFace API token
-        shorter_side_res:       decode shorter-side resolution (default 480)
+        shorter_side_res:       decode shorter-side resolution (default cfg.SHORTER_SIDE_SIZE)
         shuffle_seed:           RNG seed for deterministic sampling
         window_size:            frames per tubelet (default 64)
         stride:                 stride between tubelets (default 64, non-overlapping)

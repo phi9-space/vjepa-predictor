@@ -87,30 +87,23 @@ def transform_frames(
                 f"Frame {i}: expected [H, W, 3] uint8, got shape {frame.shape}"
             )
 
-        h, w = frame.shape[:2]
+        # FFMPEG already scales to shorter_side=438 and center crops to 384x384.
+        # Fallback in case something slips through un-cropped.
+        if frame.shape[0] != crop or frame.shape[1] != crop:
+            h, w = frame.shape[:2]
+            if w < h:
+                new_w = shorter
+                new_h = int(shorter * h / w)
+            else:
+                new_h = shorter
+                new_w = int(shorter * w / h)
+            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            rh, rw = resized.shape[:2]
+            y1 = (rh - crop) // 2
+            x1 = (rw - crop) // 2
+            frame = resized[y1 : y1 + crop, x1 : x1 + crop]
 
-        # Step 1: Resize shorter side to 438, preserving aspect ratio.
-        # This matches V-JEPA's `resize_clip` → `get_resize_sizes`:
-        #   if w < h: new_w = size, new_h = size * h / w
-        #   else:     new_h = size, new_w = size * w / h
-        if w < h:
-            new_w = shorter
-            new_h = int(shorter * h / w)
-        else:
-            new_h = shorter
-            new_w = int(shorter * w / h)
-
-        resized = cv2.resize(
-            frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR
-        )
-
-        # Step 2: CenterCrop to (384, 384)
-        rh, rw = resized.shape[:2]
-        y1 = (rh - crop) // 2
-        x1 = (rw - crop) // 2
-        cropped = resized[y1 : y1 + crop, x1 : x1 + crop]
-
-        processed.append(cropped)
+        processed.append(frame)
 
     # Stack: [T, 384, 384, 3] uint8
     stacked = np.stack(processed, axis=0)
