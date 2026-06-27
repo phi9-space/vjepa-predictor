@@ -26,7 +26,6 @@ class LatentCache:
         local_cache_dir: str = "/tmp/latent_cache",
     ):
         self.repo_id = repo_id
-        self.subset = subset
         self.hf_token = hf_token or os.environ.get("HF_TOKEN")
         self.shard_size_gb = shard_size_gb
         
