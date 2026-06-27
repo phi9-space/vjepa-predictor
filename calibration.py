@@ -181,34 +181,35 @@ def compute_flow_magnitude(
         return 0.0
 
     raft_h = raft_w = cfg.RAFT_RESIZE
-    total_magnitude = 0.0
-    n_pairs = 0
 
-    for t in range(T - 1):
-        # Resize frame pair to RAFT resolution
-        f1 = cv2.resize(frames[t], (raft_w, raft_h), interpolation=cv2.INTER_LINEAR)
-        f2 = cv2.resize(frames[t + 1], (raft_w, raft_h), interpolation=cv2.INTER_LINEAR)
+    # Resize all frames
+    resized_frames = []
+    for t in range(T):
+        resized = cv2.resize(frames[t], (raft_w, raft_h), interpolation=cv2.INTER_LINEAR)
+        resized_frames.append(resized)
+    
+    # Stack into [T, H, W, 3]
+    resized_np = np.stack(resized_frames)
+    
+    # Convert to Tensor [T, 3, H, W] and normalize to [0, 1]
+    tensor_frames = torch.from_numpy(resized_np).permute(0, 3, 1, 2).float().to(device) / 255.0
 
-        # [H,W,3] uint8 → [1,3,H,W] float32 normalized to [0,1]
-        t1 = torch.from_numpy(f1).permute(2, 0, 1).float().unsqueeze(0).to(device) / 255.0
-        t2 = torch.from_numpy(f2).permute(2, 0, 1).float().unsqueeze(0).to(device) / 255.0
+    # Create batch of pairs (T-1 pairs)
+    t1 = tensor_frames[:-1]
+    t2 = tensor_frames[1:]
 
-        with torch.inference_mode():
-            # RAFT returns list of flow predictions; last one is the finest
-            flow_list = raft_model(t1, t2)
-            flow = flow_list[-1]  # [1, 2, H, W]
+    with torch.inference_mode():
+        # RAFT returns list of flow predictions; last one is the finest
+        flow_list = raft_model(t1, t2)
+        flow = flow_list[-1]  # [T-1, 2, H, W]
 
-        # Flow magnitude: sqrt(u² + v²), clipped to RAFT_FLOW_CLIP
-        u = flow[0, 0]  # [H, W]
-        v = flow[0, 1]  # [H, W]
-        magnitude = torch.sqrt(u ** 2 + v ** 2).clamp(max=cfg.RAFT_FLOW_CLIP)
+    # Flow magnitude: sqrt(u² + v²), clipped to RAFT_FLOW_CLIP
+    u = flow[:, 0]  # [T-1, H, W]
+    v = flow[:, 1]  # [T-1, H, W]
+    magnitude = torch.sqrt(u ** 2 + v ** 2).clamp(max=cfg.RAFT_FLOW_CLIP)
 
-        total_magnitude += magnitude.mean().item()
-        n_pairs += 1
-
-        del t1, t2, flow_list, flow
-
-    return total_magnitude / max(n_pairs, 1)
+    # Return the mean magnitude across all pairs and pixels
+    return magnitude.mean().item()
 
 
 # Need cv2 for flow computation
