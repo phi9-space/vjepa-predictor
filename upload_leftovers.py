@@ -19,7 +19,7 @@ def main():
     api = HfApi(token=token)
     repo_id = cfg.HF_REPO_LATENTS
     
-    upload_dir = Path(__file__).parent / "output" / "training" / "upload_cache"
+    upload_dir = Path(__file__).parent / "output" / "training" / "upload_cache" / "master"
     if not upload_dir.exists():
         logger.info(f"No upload directory found at {upload_dir}. Nothing to do.")
         return
