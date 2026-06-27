@@ -15,8 +15,9 @@ def main():
         load_dotenv(Path(__file__).parent / ".env")
         token = os.environ.get("HF_TOKEN")
         
+    from v2 import config as cfg
     api = HfApi(token=token)
-    repo_id = "rookierufus/ego10k-vjepa-latents"
+    repo_id = cfg.HF_REPO_LATENTS
     
     upload_dir = Path(__file__).parent / "output" / "training" / "upload_cache"
     if not upload_dir.exists():

@@ -6,6 +6,8 @@ import time
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
+
+from v2 import config as cfg
 import numpy as np
 from pathlib import Path
 from huggingface_hub import HfApi
@@ -21,7 +23,7 @@ class LatentCache:
 
     def __init__(
         self,
-        repo_id: str = "phi9-space/ego10k-vjepa-latents",
+        repo_id: str = cfg.HF_REPO_LATENTS,
         hf_token: str = None,
         shard_size_gb: float = 1.0,
         local_cache_dir: str = "/tmp/latent_cache",

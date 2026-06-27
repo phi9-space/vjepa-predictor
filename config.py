@@ -128,6 +128,7 @@ MIN_TUBELETS_FOR_STABLE_EPSILON = 100
 import os
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_REPO = "builddotai/Egocentric-10K"
+HF_REPO_LATENTS = "rookierufus/ego10k-vjepa-latents"
 
 # Stratified sampling across environment types for representative ε/τ
 DEFAULT_FACTORIES = [
