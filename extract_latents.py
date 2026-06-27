@@ -38,7 +38,7 @@ def run_extraction(target_count: int = 25000, device: str = "cuda:0", shard_idx:
     
     encoder = VJEPAEncoder(device=device, fp32=True)
     raft_model = load_raft(device)
-    cache = LatentCache(shard_size_gb=1.0)
+    cache = LatentCache(repo_id="rookierufus/ego10k-vjepa-latents", shard_size_gb=1.0)
     
     # Fast index fetch to skip previously processed latents
     cached_ids = LatentCache.fetch_index()
