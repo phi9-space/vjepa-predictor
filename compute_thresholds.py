@@ -13,6 +13,7 @@ from pathlib import Path
 import os
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from datasets import load_dataset
 from . import config as cfg
 
@@ -30,7 +31,7 @@ def compute_psi(z: np.ndarray, epsilon: float) -> float:
     return psi
 
 def main():
-    repo_id = "phi9-space/ego10k-vjepa-latents"
+    repo_id = cfg.HF_REPO_LATENTS
     token = os.environ.get("HF_TOKEN")
     
     logger.info("=" * 60)
@@ -89,12 +90,13 @@ def main():
     epsilon = float(np.percentile(l1_diffs, cfg.STAGE1_PERCENTILE))
     logger.info(f"  → ε = {epsilon:.6f}")
     
-    # 3. Compute τ_kinetic
-    logger.info("  Step 3: Computing Ψ across full dataset for τ_kinetic...")
-    psi_values = []
+    # 3. Compute τ_kinetic with Online Convergence
+    logger.info("  Step 3: Computing Ψ with online convergence...")
+    psi_list = []
+    tau_history = []
     processed = 0
     
-    # We must stream again from the top.
+    # Stream again from the top
     ds_full = load_dataset(repo_id, split="train", streaming=True, token=token)
     
     t_psi_start = time.time()
@@ -104,23 +106,48 @@ def main():
             z = np.frombuffer(latent_bytes, dtype=np.float32).reshape(32, 24, 24, 768)
             
             psi = compute_psi(z, epsilon)
-            psi_values.append(psi)
+            psi_list.append(psi)
             processed += 1
             
             if processed % 1000 == 0:
-                logger.info(f"    [{time.time() - t_psi_start:.0f}s] Calculated Ψ for {processed} latents...")
+                current_tau = float(np.percentile(psi_list, cfg.STAGE2_PERCENTILE))
+                tau_history.append(current_tau)
+                logger.info(f"    [{time.time() - t_psi_start:.0f}s] {processed} samples | Current τ_kinetic = {current_tau:.6f}")
                 
-    psi_arr = np.array(psi_values)
+                # Check for convergence
+                if processed >= 5000 and len(tau_history) >= 3:
+                    diff1 = abs(tau_history[-1] - tau_history[-2])
+                    diff2 = abs(tau_history[-2] - tau_history[-3])
+                    if diff1 < 1e-4 and diff2 < 1e-4:
+                        logger.info(f"    *** Convergence Reached at {processed} samples! ***")
+                        break
+                
+    psi_arr = np.array(psi_list)
     tau_kinetic = float(np.percentile(psi_arr, cfg.STAGE2_PERCENTILE))
     
-    logger.info(f"  → τ_kinetic = {tau_kinetic:.6f}")
+    logger.info(f"  → Final τ_kinetic = {tau_kinetic:.6f}")
+    
+    # Plot Convergence Graph
+    output_dir = cfg.CALIBRATION_OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(1000, processed + 1, 1000), tau_history, marker='o', linestyle='-', color='b')
+    plt.title("Online Convergence of τ_kinetic (20th Percentile)")
+    plt.xlabel("Number of Samples")
+    plt.ylabel("τ_kinetic")
+    plt.grid(True)
+    graph_path = output_dir / "tau_convergence.png"
+    plt.savefig(graph_path)
+    plt.close()
+    logger.info(f"  Saved convergence graph to {graph_path}")
     
     # 4. Save Output
     elapsed = time.time() - t_start
     result = {
         "epsilon": epsilon,
         "tau_kinetic": tau_kinetic,
-        "n_tubelets": len(psi_values),
+        "n_tubelets": processed,
         "elapsed_s": elapsed,
         "psi_stats": {
             "mean": float(np.mean(psi_arr)),

@@ -3,54 +3,19 @@ import numpy as np
 from torch.utils.data import IterableDataset, DataLoader
 from datasets import load_dataset
 from huggingface_hub import HfApi
-import itertools
-from pathlib import Path
-import pyarrow.parquet as pq
-import gc
 import random
 import logging
+import json
 
 from v2 import config as cfg
 
 logger = logging.getLogger(__name__)
 
-class SafeLocalStreamer:
-    """
-    Robust generator that safely streams TARGETED Parquet files from a live auto-deleting directory.
-    - Captures FileNotFoundError if background uploader deletes the file before opening.
-    - Captures PyArrow exceptions if the background extractor is currently mid-write.
-    - Enforces strict Garbage Collection to prevent RAM exhaustion.
-    """
-    def __init__(self, target_files: list[Path]):
-        self.target_files = target_files
-        
-    def __iter__(self):
-        for f in self.target_files:
-            try:
-                # Load the entire 1GB file into RAM instantly to protect it from background deletion
-                table = pq.read_table(f)
-            except (FileNotFoundError, OSError):
-                # The blitz uploader successfully uploaded and deleted this file before we opened it.
-                continue
-            except Exception as e:
-                # E.g., ArrowInvalid: The extraction script is currently mid-write and the footer is missing.
-                continue
-                
-            try:
-                # Yield rows safely from RAM
-                for i in range(table.num_rows):
-                    row = table.slice(i, 1).to_pylist()[0]
-                    yield row
-            finally:
-                # MANDATORY to prevent 256GB OOM crash
-                del table
-                gc.collect()
-
-
 class Ego10kLatentStream(IterableDataset):
     """
-    True IID Proportional Subsampler for V-JEPA latents.
-    Dynamically pulls from HuggingFace and Local Buffer proportionally to save bandwidth.
+    True IID Subsampler for V-JEPA latents.
+    Dynamically pulls from HuggingFace, ensuring true random sampling per epoch
+    by selecting a different subset of parquet shards every time __iter__ is called.
     """
     def __init__(self, split: str = "train", epsilon: float = 0.678, tau_kinetic: float = 0.001, seed: int = 42):
         super().__init__()
@@ -70,66 +35,37 @@ class Ego10kLatentStream(IterableDataset):
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         
-        # 1. Dynamically query available files
+        # 1. Dynamically query all available files in the HF dataset
         try:
             cloud_files = [f.rfilename for f in self.api.list_repo_tree(repo_id=cfg.HF_REPO_LATENTS, repo_type='dataset', path_in_repo='data/train')]
         except Exception as e:
             logger.warning(f"Failed to query HF API, using empty cloud list: {e}")
             cloud_files = []
             
-        local_dir = Path("/tmp/latent_cache/master")
-        local_files = list(local_dir.glob("*.parquet")) if local_dir.exists() else []
-        
         n_cloud = len(cloud_files)
-        n_local = len(local_files)
-        n_total = n_cloud + n_local
-        
-        if n_total == 0:
-            logger.warning("No files found in cloud or local!")
+        if n_cloud == 0:
+            logger.warning("No files found in cloud!")
             return
             
-        # 2. Calculate proportions
-        p_cloud = n_cloud / n_total
-        p_local = n_local / n_total
-        
-        # We assume 19 tubelets per file on average
+        # We assume ~19 tubelets per file on average
         files_needed = max(1, int(cfg.EPOCH_TUBELETS / 19))
+        target_cloud_files = min(files_needed, n_cloud)
         
-        # Mathematically round to ensure exact distribution
-        target_cloud_files = int(round(files_needed * p_cloud))
-        target_local_files = files_needed - target_cloud_files
-        
-        # Cap to available (edge case)
-        target_cloud_files = min(target_cloud_files, n_cloud)
-        target_local_files = min(target_local_files, n_local)
-        
-        logger.info(f"Epoch sampling {target_cloud_files} cloud files and {target_local_files} local files.")
-        
-        # 3. Randomly Subsample
+        # 2. Randomly Subsample files for THIS epoch
+        # This guarantees we read a different subset of the 25k tubelets every epoch!
         random.shuffle(cloud_files)
-        random.shuffle(local_files)
-        
         sampled_cloud = cloud_files[:target_cloud_files]
-        sampled_local = local_files[:target_local_files]
         
-        # 4. Construct the targeted streams
-        hf_dataset = None
-        if sampled_cloud:
-            hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, data_files=sampled_cloud, split="train", streaming=True)
-            hf_dataset = hf_dataset.shuffle(seed=self.seed, buffer_size=100)
-            
-        local_dataset = SafeLocalStreamer(sampled_local)
-        
-        # 5. Union the streams
-        if hf_dataset is not None:
-            union_stream = itertools.chain(hf_dataset, local_dataset)
-        else:
-            union_stream = local_dataset
+        # 3. Construct the targeted stream
+        hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, data_files=sampled_cloud, split="train", streaming=True)
+        # Also shuffle the buffer dynamically
+        buffer_seed = random.randint(0, 2**32 - 1)
+        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=100)
             
         # Yield exactly EPOCH_TUBELETS
         yielded_count = 0
         
-        for i, row in enumerate(union_stream):
+        for i, row in enumerate(hf_dataset):
             if yielded_count >= cfg.EPOCH_TUBELETS:
                 break
                 
@@ -166,8 +102,17 @@ def get_dataloaders(batch_size: int = 8, num_workers: int = 4, seed: int = 42):
     """
     Constructs the train and validation dataloaders.
     """
-    train_ds = Ego10kLatentStream(split="train", seed=seed)
-    val_ds = Ego10kLatentStream(split="val", seed=seed)
+    calibration_path = cfg.CALIBRATION_OUTPUT_DIR / "calibration.json"
+    if not calibration_path.exists():
+        raise RuntimeError("calibration.json not found! Must run calibration first.")
+        
+    with open(calibration_path, "r") as f:
+        calib_data = json.load(f)
+        epsilon = calib_data["epsilon"]
+        tau_kinetic = calib_data["tau_kinetic"]
+        
+    train_ds = Ego10kLatentStream(split="train", epsilon=epsilon, tau_kinetic=tau_kinetic, seed=seed)
+    val_ds = Ego10kLatentStream(split="val", epsilon=epsilon, tau_kinetic=tau_kinetic, seed=seed)
     
     # prefetch_factor ensures data is heavily buffered in RAM so the GPU is never starved
     train_loader = DataLoader(
