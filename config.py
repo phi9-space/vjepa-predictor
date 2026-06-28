@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# The target number of sampled tubelets per epoch across Cloud + Local for Proportional Subsampling
+EPOCH_TUBELETS = 3000
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Paths
