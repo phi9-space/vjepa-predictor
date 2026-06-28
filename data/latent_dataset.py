@@ -116,7 +116,7 @@ class Ego10kLatentStream(IterableDataset):
         hf_dataset = None
         if sampled_cloud:
             hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, data_files=sampled_cloud, split="train", streaming=True)
-            hf_dataset = hf_dataset.shuffle(seed=self.seed, buffer_size=1000)
+            hf_dataset = hf_dataset.shuffle(seed=self.seed, buffer_size=100)
             
         local_dataset = SafeLocalStreamer(sampled_local)
         

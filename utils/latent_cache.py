@@ -137,13 +137,9 @@ class LatentCache:
         self.current_buffer_bytes = 0
         self.shard_counter += 1
 
-    def _uploader_loop(self):
-        while not self.stop_event.is_set() or not self.upload_queue.empty():
-            try:
-                local_path, hf_path = self.upload_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-
+    def _upload_single(self, local_path, hf_path):
+        success = False
+        while not success:
             try:
                 logger.info(f"[LatentCache Upload] Pushing {local_path.name} to HuggingFace...")
                 t_up = time.time()
@@ -157,13 +153,21 @@ class LatentCache:
                 # Cleanup local disk
                 local_path.unlink(missing_ok=True)
                 logger.debug(f"Successfully uploaded and deleted {local_path.name}")
+                success = True
             except Exception as e:
                 logger.error(f"Failed to upload {local_path.name}: {e}. Backing off for 15s...")
                 time.sleep(15)
-                # Re-queue on failure
-                self.upload_queue.put((local_path, hf_path))
-                
-            self.upload_queue.task_done()
+        self.upload_queue.task_done()
+
+    def _uploader_loop(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            while not self.stop_event.is_set() or not self.upload_queue.empty():
+                try:
+                    local_path, hf_path = self.upload_queue.get(timeout=1.0)
+                    executor.submit(self._upload_single, local_path, hf_path)
+                except queue.Empty:
+                    continue
 
     def close(self):
         """

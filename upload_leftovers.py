@@ -19,33 +19,44 @@ def main():
     api = HfApi(token=token)
     repo_id = cfg.HF_REPO_LATENTS
     
-    upload_dir = Path(__file__).parent / "output" / "training" / "upload_cache" / "master"
+    upload_dir = Path("/tmp/latent_cache/master")
     if not upload_dir.exists():
         logger.info(f"No upload directory found at {upload_dir}. Nothing to do.")
         return
-
+    
     parquet_files = list(upload_dir.glob("*.parquet"))
     logger.info(f"Found {len(parquet_files)} parquet files to upload.")
     
-    for local_path in parquet_files:
-        hf_path = f"data/train/{local_path.name}"
+    if not parquet_files:
+        logger.info("No files to upload. Exiting.")
+        return
+
+    # Use ThreadPoolExecutor for 8x faster uploads
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    def upload_single_file(p: Path):
         success = False
         while not success:
             try:
-                logger.info(f"Pushing {local_path.name} to {hf_path}...")
-                t0 = time.time()
                 api.upload_file(
-                    path_or_fileobj=str(local_path),
-                    path_in_repo=hf_path,
+                    path_or_fileobj=str(p),
+                    path_in_repo=f"data/train/{p.name}",
                     repo_id=repo_id,
                     repo_type="dataset",
                 )
-                logger.info(f"Successfully uploaded {local_path.name} in {time.time() - t0:.1f}s.")
-                local_path.unlink(missing_ok=True)
+                logger.info(f"Successfully uploaded {p.name}")
+                p.unlink(missing_ok=True)
                 success = True
             except Exception as e:
-                logger.error(f"Failed to upload {local_path.name}: {e}. Backing off for 15s...")
+                logger.error(f"Failed to upload {p.name}: {e}. Retrying in 15s...")
                 time.sleep(15)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(upload_single_file, p) for p in parquet_files]
+        for future in as_completed(futures):
+            future.result() # Will raise exceptions if any occur, but they are caught in the loop
+            
+    logger.info("All leftover files successfully uploaded and cleaned up!")
 
 if __name__ == "__main__":
     main()
