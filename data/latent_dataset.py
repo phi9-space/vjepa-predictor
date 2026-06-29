@@ -26,7 +26,7 @@ class Ego10kLatentStream(IterableDataset):
         self.seed = seed
         self.repo = cfg.HF_REPO_LATENTS
         self.token = cfg.HF_TOKEN
-        self.local_dir = "/root/v2/data"
+        self.local_dir = "/root/v2/data/data/train"
         
         # Check if local storage pipeline is available
         self.is_local = os.path.exists(self.local_dir) and any(f.endswith('.parquet') for f in os.listdir(self.local_dir))
