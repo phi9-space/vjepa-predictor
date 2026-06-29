@@ -163,6 +163,7 @@ def train():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
+            cfg.TRAINING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             torch.save({
                 'p_theta': p_theta.state_dict(),
                 'q_theta': q_theta.state_dict(),
