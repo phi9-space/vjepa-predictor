@@ -57,8 +57,9 @@ class Ego10kLatentStream(IterableDataset):
         my_files = [f for i, f in enumerate(shuffled_files) if i % num_workers == worker_id]
         
         import requests
-        import io
         import pyarrow.parquet as pq
+        import tempfile
+        import os
         
         yielded_count = 0
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
@@ -68,17 +69,23 @@ class Ego10kLatentStream(IterableDataset):
                 break
                 
             url = f"https://huggingface.co/datasets/{self.repo}/resolve/main/{filename}"
-            try:
-                resp = requests.get(url, headers=headers)
-                resp.raise_for_status()
-            except Exception as e:
-                logger.error(f"Failed to download {filename}: {e}")
-                continue
+            
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                try:
+                    with requests.get(url, headers=headers, stream=True) as r:
+                        r.raise_for_status()
+                        for chunk in r.iter_content(chunk_size=8192*4):
+                            if chunk:
+                                tmp.write(chunk)
+                    tmp.flush()
+                except Exception as e:
+                    logger.error(f"Failed to download {filename}: {e}")
+                    os.unlink(tmp.name)
+                    continue
                 
-            # Lazily iterate over batches instead of eagerly decompressing the whole table
-            bytes_io = io.BytesIO(resp.content)
+            # Lazily iterate over batches via memory-mapped disk file
             try:
-                pf = pq.ParquetFile(bytes_io)
+                pf = pq.ParquetFile(tmp.name, memory_map=True)
                 for batch in pf.iter_batches(batch_size=32): # Process 32 rows at a time
                     if yielded_count >= cfg.TUBELETS_PER_EPOCH:
                         break
@@ -113,8 +120,8 @@ class Ego10kLatentStream(IterableDataset):
             except Exception as e:
                 logger.error(f"Failed to parse {filename}: {e}")
             finally:
-                del resp
-                del bytes_io
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
                 import gc
                 gc.collect()
 
