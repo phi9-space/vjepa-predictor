@@ -57,7 +57,7 @@ class Ego10kLatentStream(IterableDataset):
                 
             # Decode the latent bytes
             latent_bytes = row['latent_bytes']
-            z_np = np.frombuffer(latent_bytes, dtype=np.float32).reshape(32, 24, 24, 768)
+            z_np = np.frombuffer(latent_bytes, dtype=np.float32).copy().reshape(32, 24, 24, 768)
             z = torch.from_numpy(z_np)
             
             # Compute Temporal Persistence Filter
