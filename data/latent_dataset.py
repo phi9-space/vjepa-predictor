@@ -37,7 +37,7 @@ class Ego10kLatentStream(IterableDataset):
         hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, split="train", streaming=True)
         # Aggressive shuffle buffer since pod has massive bandwidth
         buffer_seed = random.randint(0, 2**32 - 1)
-        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=5000)
+        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=20)
             
         yielded_count = 0
         
