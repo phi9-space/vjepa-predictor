@@ -95,7 +95,7 @@ def get_dataloaders(batch_size: int = 8, num_workers: int = 4, seed: int = 42):
         train_ds, 
         batch_size=batch_size, 
         num_workers=num_workers,
-        prefetch_factor=4 if num_workers > 0 else None,
+        prefetch_factor=2 if num_workers > 0 else None,
         pin_memory=True
     )
     
