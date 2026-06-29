@@ -42,7 +42,7 @@ class Ego10kLatentStream(IterableDataset):
         yielded_count = 0
         
         for i, row in enumerate(hf_dataset):
-            if yielded_count >= cfg.EPOCH_TUBELETS:
+            if yielded_count >= cfg.TUBELETS_PER_EPOCH:
                 break
                 
             if worker_info is not None:
@@ -84,8 +84,8 @@ def get_dataloaders(batch_size: int = 8, num_workers: int = 4, seed: int = 42):
         
     with open(calibration_path, "r") as f:
         calib_data = json.load(f)
-        epsilon = calib_data["epsilon"]
-        tau_kinetic = calib_data["tau_kinetic"]
+        epsilon = calib_data["epsilon_noise_floor"]
+        tau_kinetic = calib_data["tau_kinetic_gate"]
         
     train_ds = Ego10kLatentStream(split="train", epsilon=epsilon, tau_kinetic=tau_kinetic, seed=seed)
     val_ds = Ego10kLatentStream(split="val", epsilon=epsilon, tau_kinetic=tau_kinetic, seed=seed)
