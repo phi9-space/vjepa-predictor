@@ -12,11 +12,11 @@ def benchmark_dataloader():
     
     cfg.BATCH_SIZE = 8
     
-    print("Initializing DataLoader with num_workers=32...")
+    print("Initializing DataLoader with num_workers=8...")
     try:
         train_loader, val_loader = get_dataloaders(
             batch_size=cfg.BATCH_SIZE,
-            num_workers=32 # Test 32 workers
+            num_workers=8 # 8 workers to guarantee we stay well under 125GB
         )
         
         print("Starting DataLoader benchmark...")

@@ -32,15 +32,12 @@ class CNNPredictor(nn.Module):
         )
         self.activation = nn.SiLU()
 
-        # Pointwise Conv3D (Semantic Mixing Rotation)
-        # Semantically rotates the dynamics into the V-JEPA channel basis
-        self.pointwise = nn.Conv3d(
-            in_channels=768,
-            out_channels=768,
-            kernel_size=(1, 1, 1),
-            stride=1,
-            padding=0,
-            bias=True
+        # Feed-Forward Network (Non-Linear Semantic Mixing)
+        # Expands capacity to ~4.7M parameters with an inverted bottleneck
+        self.pointwise = nn.Sequential(
+            nn.Conv3d(in_channels=768, out_channels=3072, kernel_size=(1, 1, 1), bias=True),
+            nn.SiLU(),
+            nn.Conv3d(in_channels=3072, out_channels=768, kernel_size=(1, 1, 1), bias=True)
         )
 
         # The Retraction Map (Scalar Gated Integration)

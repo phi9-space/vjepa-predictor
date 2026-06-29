@@ -174,14 +174,19 @@ def train():
             # Upload to HuggingFace
             if cfg.HF_TOKEN and hasattr(cfg, 'HF_REPO_MODEL'):
                 try:
-                    logger.info(f"Uploading checkpoint to HuggingFace ({cfg.HF_REPO_MODEL})...")
+                    logger.info(f"Uploading checkpoint to HuggingFace ({cfg.HF_REPO_MODEL}) on branch v2-pointwise-ffn...")
                     api = HfApi(token=cfg.HF_TOKEN)
                     api.create_repo(repo_id=cfg.HF_REPO_MODEL, private=True, exist_ok=True)
+                    try:
+                        api.create_branch(repo_id=cfg.HF_REPO_MODEL, branch="v2-pointwise-ffn", exist_ok=True)
+                    except Exception as e:
+                        logger.warning(f"Branch creation warning: {e}")
                     api.upload_file(
                         path_or_fileobj=str(cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt"),
                         path_in_repo="best_oracles.pt",
                         repo_id=cfg.HF_REPO_MODEL,
-                        repo_type="model"
+                        repo_type="model",
+                        revision="v2-pointwise-ffn"
                     )
                     logger.info("Successfully uploaded best_oracles.pt to HuggingFace!")
                 except Exception as e:
