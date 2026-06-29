@@ -14,8 +14,7 @@ logger = logging.getLogger(__name__)
 class Ego10kLatentStream(IterableDataset):
     """
     True IID Subsampler for V-JEPA latents.
-    Dynamically pulls from HuggingFace, ensuring true random sampling per epoch
-    by selecting a different subset of parquet shards every time __iter__ is called.
+    Dynamically pulls from HuggingFace, ensuring true random sampling per epoch.
     """
     def __init__(self, split: str = "train", epsilon: float = 0.678, tau_kinetic: float = 0.001, seed: int = 42):
         super().__init__()
@@ -23,7 +22,6 @@ class Ego10kLatentStream(IterableDataset):
         self.epsilon = epsilon
         self.tau_kinetic = tau_kinetic
         self.seed = seed
-        self.api = HfApi()
 
     def _is_valid_split(self, factory_id: str, video_index: int) -> bool:
         val_hash = hash(f"{factory_id}_{video_index}") % 10
@@ -35,34 +33,12 @@ class Ego10kLatentStream(IterableDataset):
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         
-        # 1. Dynamically query all available files in the HF dataset
-        try:
-            cloud_files = [f.rfilename for f in self.api.list_repo_tree(repo_id=cfg.HF_REPO_LATENTS, repo_type='dataset', path_in_repo='data/train')]
-        except Exception as e:
-            logger.warning(f"Failed to query HF API, using empty cloud list: {e}")
-            cloud_files = []
-            
-        n_cloud = len(cloud_files)
-        if n_cloud == 0:
-            logger.warning("No files found in cloud!")
-            return
-            
-        # We assume ~19 tubelets per file on average
-        files_needed = max(1, int(cfg.EPOCH_TUBELETS / 19))
-        target_cloud_files = min(files_needed, n_cloud)
-        
-        # 2. Randomly Subsample files for THIS epoch
-        # This guarantees we read a different subset of the 25k tubelets every epoch!
-        random.shuffle(cloud_files)
-        sampled_cloud = cloud_files[:target_cloud_files]
-        
-        # 3. Construct the targeted stream
-        hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, data_files=sampled_cloud, split="train", streaming=True)
-        # Also shuffle the buffer dynamically
+        # Pure streaming from HuggingFace
+        hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, split="train", streaming=True)
+        # Aggressive shuffle buffer since pod has massive bandwidth
         buffer_seed = random.randint(0, 2**32 - 1)
-        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=100)
+        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=5000)
             
-        # Yield exactly EPOCH_TUBELETS
         yielded_count = 0
         
         for i, row in enumerate(hf_dataset):

@@ -10,7 +10,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import pyarrow.parquet as pq
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
+from collections import defaultdict
+import concurrent.futures
 from . import config as cfg
 
 logging.basicConfig(
@@ -20,65 +22,94 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def fetch_mflow(args):
+    fs, path = args
+    try:
+        with fs.open(path, "rb") as f:
+            table = pq.read_table(f, columns=["m_flow", "tag"])
+            df = table.to_pandas()
+            # Need row indices to know which one to pick
+            df['row_idx'] = np.arange(len(df))
+            valid = df[(df['tag'] == 'iid_sample') & (df['m_flow'] >= 0)]
+            if valid.empty:
+                return []
+            return [(path, row['row_idx'], row['m_flow']) for _, row in valid.iterrows()]
+    except Exception as e:
+        logger.warning(f"Error reading {path}: {e}")
+        return []
+
 def main():
     repo_id = cfg.HF_REPO_LATENTS
     token = os.environ.get("HF_TOKEN")
 
     logger.info("=" * 60)
-    logger.info("  COMPUTING CALIBRATION THRESHOLDS (OFFLINE)")
+    logger.info("  COMPUTING CALIBRATION THRESHOLDS (OFFLINE - V2 Optimized)")
     logger.info("=" * 60)
     t_start = time.time()
 
+    fs = HfFileSystem(token=token)
     api = HfApi(token=token)
     logger.info(f"  Fetching file list from {repo_id}...")
-    all_files = api.list_repo_files(repo_id, repo_type="dataset")
-    parquet_files = [f for f in all_files if f.endswith(".parquet")]
     
-    logger.info(f"  Found {len(parquet_files)} parquet files. Commencing Zero-Disk-Footprint Pass...")
+    # We can use HfFileSystem glob to get all parquets
+    files = fs.glob(f"datasets/{repo_id}/data/**/*.parquet")
+    logger.info(f"  Found {len(files)} parquet files. Commencing Zero-Disk-Footprint Pass 1...")
 
-    # PASS 1: Epsilon Estimation
-    # We need 1000 static tubelets. We'll sample the first ~150 files (approx 2800 tubelets),
-    # compute their L1 diffs on the fly, and take the 1000 with the lowest m_flow.
-    logger.info("  Step 1: Computing ε (Sensor Noise Floor)...")
+    # PASS 1: Epsilon Estimation (Global Top 1000)
+    logger.info("  Step 1: Computing ε (Sensor Noise Floor) via global column projection...")
     
-    tubelet_stats = []
-    files_processed = 0
     t_pass1 = time.time()
     
-    for pf in parquet_files:
-        if len(tubelet_stats) >= 3000:
-            break
-            
-        local_path = hf_hub_download(
-            repo_id, pf, repo_type="dataset", token=token, 
-            local_dir="/tmp", local_dir_use_symlinks=False
-        )
+    all_tubelets = []
+    # Using thread pool to parallel fetch m_flow
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+        results = executor.map(fetch_mflow, [(fs, f) for f in files])
+        for i, res in enumerate(results):
+            all_tubelets.extend(res)
+            if (i+1) % 200 == 0:
+                logger.info(f"    [Pass 1: {time.time() - t_pass1:.0f}s] Scanned {i+1}/{len(files)} files...")
+                
+    logger.info(f"  Found {len(all_tubelets)} valid tubelets globally. Sorting to find top static...")
+    
+    # Sort by m_flow (index 2)
+    all_tubelets.sort(key=lambda x: x[2])
+    target_count = min(cfg.STAGE1_TARGET_STATIC_COUNT, len(all_tubelets))
+    best_static = all_tubelets[:target_count]
+    
+    # Group by file to minimize downloads
+    file_to_rows = defaultdict(list)
+    for path, row_idx, m_flow in best_static:
+        file_to_rows[path].append(row_idx)
         
-        table = pq.read_table(local_path)
-        for batch in table.to_batches():
-            d = batch.to_pydict()
-            n_rows = len(d[list(d.keys())[0]])
-            for i in range(n_rows):
-                if d["tag"][i] == "iid_sample" and d["m_flow"][i] >= 0:
-                    z = np.frombuffer(d["latent_bytes"][i], dtype=np.float32).reshape(32, 24, 24, 768)
-                    diffs = np.abs(z[1:] - z[:-1]).mean(axis=(1, 2, 3))
-                    tubelet_stats.append((d["m_flow"][i], diffs.tolist()))
-                    
-        os.remove(local_path)
-        files_processed += 1
-        logger.info(f"    [Pass 1: {time.time() - t_pass1:.0f}s] Processed {files_processed} files, extracted {len(tubelet_stats)} latents...")
-
-    # Sort by m_flow and pick top 1000
-    tubelet_stats.sort(key=lambda x: x[0])
-    target_count = min(cfg.STAGE1_TARGET_STATIC_COUNT, len(tubelet_stats))
-    best_static = tubelet_stats[:target_count]
+    logger.info(f"  Top {target_count} tubelets are spread across {len(file_to_rows)} files.")
+    logger.info(f"  Downloading only these {len(file_to_rows)} files to compute L1 diffs...")
     
     l1_diffs = []
-    for _, diffs in best_static:
-        l1_diffs.extend(diffs)
+    downloaded_files = 0
+    
+    for path, row_indices in file_to_rows.items():
+        file_path_in_repo = path.split(repo_id + "/")[-1]
+        try:
+            local_path = hf_hub_download(
+                repo_id, file_path_in_repo, repo_type="dataset", token=token, 
+                local_dir="/tmp", local_dir_use_symlinks=False
+            )
+            table = pq.read_table(local_path)
+            for row_idx in row_indices:
+                d = table.take([row_idx]).to_pydict()
+                z = np.frombuffer(d["latent_bytes"][0], dtype=np.float32).reshape(32, 24, 24, 768)
+                diffs = np.abs(z[1:] - z[:-1]).mean(axis=(1, 2, 3))
+                l1_diffs.extend(diffs.tolist())
+            os.remove(local_path)
+            downloaded_files += 1
+        except Exception as e:
+            logger.warning(f"Failed to process {path}: {e}")
+            
+    if not l1_diffs:
+        raise RuntimeError("Failed to compute any L1 diffs. Epsilon estimation failed.")
         
     epsilon = float(np.percentile(l1_diffs, cfg.STAGE1_PERCENTILE))
-    logger.info(f"  → ε = {epsilon:.6f} (calculated from {target_count} static anchors)")
+    logger.info(f"  → ε = {epsilon:.6f} (calculated from {target_count} static anchors, downloaded {downloaded_files} files)")
 
     # PASS 2: Tau Kinetic Estimation with Online Convergence
     logger.info("  Step 2: Computing Ψ with online convergence...")
@@ -89,8 +120,9 @@ def main():
     t_pass2 = time.time()
     converged = False
     
-    # Continue from where we left off
-    for pf in parquet_files[files_processed:]:
+    parquet_files_api = [f for f in api.list_repo_files(repo_id, repo_type="dataset") if f.endswith(".parquet")]
+    
+    for pf in parquet_files_api:
         if converged:
             break
             
@@ -99,38 +131,40 @@ def main():
             local_dir="/tmp", local_dir_use_symlinks=False
         )
         
-        table = pq.read_table(local_path)
-        for batch in table.to_batches():
-            if converged: break
-            
-            d = batch.to_pydict()
-            n_rows = len(d[list(d.keys())[0]])
-            for i in range(n_rows):
+        try:
+            table = pq.read_table(local_path)
+            for batch in table.to_batches():
                 if converged: break
                 
-                if d["tag"][i] == "iid_sample":
-                    z = np.frombuffer(d["latent_bytes"][i], dtype=np.float32).reshape(32, 24, 24, 768)
+                d = batch.to_pydict()
+                n_rows = len(d[list(d.keys())[0]])
+                for i in range(n_rows):
+                    if converged: break
                     
-                    # Compute Psi
-                    diffs = np.abs(z[1:] - z[:-1])
-                    per_frame = diffs.mean(axis=(1, 2, 3))
-                    psi = float(np.sum(np.maximum(0.0, per_frame - epsilon)))
-                    psi_list.append(psi)
-                    processed += 1
+                    if d["tag"][i] == "iid_sample":
+                        z = np.frombuffer(d["latent_bytes"][i], dtype=np.float32).reshape(32, 24, 24, 768)
+                        
+                        # Compute Psi
+                        diffs = np.abs(z[1:] - z[:-1])
+                        per_frame = diffs.mean(axis=(1, 2, 3))
+                        psi = float(np.sum(np.maximum(0.0, per_frame - epsilon)))
+                        psi_list.append(psi)
+                        processed += 1
 
-                    if processed % 1000 == 0:
-                        current_tau = float(np.percentile(psi_list, cfg.STAGE2_PERCENTILE))
-                        tau_history.append(current_tau)
-                        logger.info(f"    [Pass 2: {time.time() - t_pass2:.0f}s] {processed} samples | Current τ_kinetic = {current_tau:.6f}")
+                        if processed % 1000 == 0:
+                            current_tau = float(np.percentile(psi_list, cfg.STAGE2_PERCENTILE))
+                            tau_history.append(current_tau)
+                            logger.info(f"    [Pass 2: {time.time() - t_pass2:.0f}s] {processed} samples | Current τ_kinetic = {current_tau:.6f}")
 
-                        if processed >= 5000 and len(tau_history) >= 3:
-                            diff1 = abs(tau_history[-1] - tau_history[-2])
-                            diff2 = abs(tau_history[-2] - tau_history[-3])
-                            if diff1 < 1e-4 and diff2 < 1e-4:
-                                logger.info(f"    *** Convergence Reached at {processed} samples! ***")
-                                converged = True
-                                
-        os.remove(local_path)
+                            if processed >= 5000 and len(tau_history) >= 3:
+                                diff1 = abs(tau_history[-1] - tau_history[-2])
+                                diff2 = abs(tau_history[-2] - tau_history[-3])
+                                if diff1 < 1e-4 and diff2 < 1e-4:
+                                    logger.info(f"    *** Convergence Reached at {processed} samples! ***")
+                                    converged = True
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
 
     psi_arr = np.array(psi_list)
     tau_kinetic = float(np.percentile(psi_arr, cfg.STAGE2_PERCENTILE))
