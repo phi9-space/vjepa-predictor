@@ -76,7 +76,7 @@ def train():
     q_theta = create_q_theta().to(device)
     
     # 2. Dataloaders
-    train_loader, val_loader = get_dataloaders(batch_size=cfg.BATCH_SIZE, num_workers=6)
+    train_loader, val_loader = get_dataloaders(batch_size=cfg.BATCH_SIZE, num_workers=4)
     train_iter = iter(train_loader)
     
     # 3. Optimizer
@@ -115,7 +115,7 @@ def train():
             except StopIteration:
                 logger.info("Dataset stream exhausted! Dynamically pulling latest files from HuggingFace...")
                 # Recreate the dataloader with a new seed to fetch any newly uploaded parquet shards
-                train_loader, val_loader = get_dataloaders(batch_size=cfg.BATCH_SIZE, num_workers=6, seed=epoch+step)
+                train_loader, val_loader = get_dataloaders(batch_size=cfg.BATCH_SIZE, num_workers=4, seed=epoch+step)
                 train_iter = iter(train_loader)
                 z_batch = next(train_iter)
                 
