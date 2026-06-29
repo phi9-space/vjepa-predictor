@@ -3,6 +3,7 @@ import torch.optim as optim
 import math
 import logging
 from pathlib import Path
+from huggingface_hub import HfApi
 
 from v2 import config as cfg
 from v2.models import create_p_theta, create_q_theta
@@ -169,6 +170,22 @@ def train():
                 'q_theta': q_theta.state_dict(),
             }, cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt")
             logger.info("Saved new best model.")
+            
+            # Upload to HuggingFace
+            if cfg.HF_TOKEN and hasattr(cfg, 'HF_REPO_MODEL'):
+                try:
+                    logger.info(f"Uploading checkpoint to HuggingFace ({cfg.HF_REPO_MODEL})...")
+                    api = HfApi(token=cfg.HF_TOKEN)
+                    api.create_repo(repo_id=cfg.HF_REPO_MODEL, private=True, exist_ok=True)
+                    api.upload_file(
+                        path_or_fileobj=str(cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt"),
+                        path_in_repo="best_oracles.pt",
+                        repo_id=cfg.HF_REPO_MODEL,
+                        repo_type="model"
+                    )
+                    logger.info("Successfully uploaded best_oracles.pt to HuggingFace!")
+                except Exception as e:
+                    logger.error(f"Failed to upload model to HuggingFace: {e}")
         else:
             patience_counter += 1
             if patience_counter >= cfg.PATIENCE:

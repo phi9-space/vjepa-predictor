@@ -131,7 +131,8 @@ MIN_TUBELETS_FOR_STABLE_EPSILON = 100
 import os
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_REPO = "builddotai/Egocentric-10K"
-HF_REPO_LATENTS = "rookierufus/ego10k-vjepa-latents"
+HF_REPO_LATENTS = os.getenv("HF_REPO_LATENTS", "rookierufus/ego10k-vjepa-latents")
+HF_REPO_MODEL = os.getenv("HF_REPO_MODEL", "rookierufus/oracle-predictor-CNN-VJEPA-Ego10k")
 
 # Stratified sampling across environment types for representative ε/τ
 DEFAULT_FACTORIES = [
