@@ -25,14 +25,19 @@ class Ego10kLatentStream(IterableDataset):
         self.seed = seed
         self.repo = cfg.HF_REPO_LATENTS
         self.token = cfg.HF_TOKEN
+        self.local_dir = "/root/v2/data"
         
-        logger.info(f"Listing parquet files for {split} split...")
-        api = HfApi(token=self.token)
-        all_files = [f for f in api.list_repo_files(repo_id=self.repo, repo_type="dataset", token=self.token) if f.endswith('.parquet')]
+        # Check if local storage pipeline is available
+        self.is_local = os.path.exists(self.local_dir) and any(f.endswith('.parquet') for f in os.listdir(self.local_dir))
         
-        # Filter files for the split roughly using a hash.
-        # Ego10k uses factory_id + video_idx for splitting. We approximate by splitting the files.
-        # Actually, previous implementation checked split per-row. We'll do the same.
+        if self.is_local:
+            logger.info(f"Local storage volume detected at {self.local_dir}! Using local zero-copy PyArrow pipeline.")
+            all_files = [f for f in os.listdir(self.local_dir) if f.endswith('.parquet')]
+        else:
+            logger.info(f"Listing parquet files for {split} split from HuggingFace...")
+            api = HfApi(token=self.token)
+            all_files = [f for f in api.list_repo_files(repo_id=self.repo, repo_type="dataset", token=self.token) if f.endswith('.parquet')]
+        
         self.files = all_files
         logger.info(f"Found {len(self.files)} total parquet files.")
 
@@ -68,24 +73,31 @@ class Ego10kLatentStream(IterableDataset):
             if yielded_count >= cfg.TUBELETS_PER_EPOCH:
                 break
                 
-            url = f"https://huggingface.co/datasets/{self.repo}/resolve/main/{filename}"
-            
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            if self.is_local:
+                # Direct local NVMe zero-copy stream
+                target_path = os.path.join(self.local_dir, filename)
+                if not os.path.exists(target_path):
+                    continue
+            else:
+                # Network streaming
+                url = f"https://huggingface.co/datasets/{self.repo}/resolve/main/{filename}"
+                target_path = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False).name
                 try:
                     with requests.get(url, headers=headers, stream=True) as r:
                         r.raise_for_status()
-                        for chunk in r.iter_content(chunk_size=8192*4):
-                            if chunk:
-                                tmp.write(chunk)
-                    tmp.flush()
+                        with open(target_path, 'wb') as tmp:
+                            for chunk in r.iter_content(chunk_size=8192*4):
+                                if chunk:
+                                    tmp.write(chunk)
                 except Exception as e:
                     logger.error(f"Failed to download {filename}: {e}")
-                    os.unlink(tmp.name)
+                    if os.path.exists(target_path):
+                        os.unlink(target_path)
                     continue
                 
             # Lazily iterate over batches via memory-mapped disk file
             try:
-                pf = pq.ParquetFile(tmp.name, memory_map=True)
+                pf = pq.ParquetFile(target_path, memory_map=True)
                 for batch in pf.iter_batches(batch_size=32): # Process 32 rows at a time
                     if yielded_count >= cfg.TUBELETS_PER_EPOCH:
                         break
@@ -120,8 +132,8 @@ class Ego10kLatentStream(IterableDataset):
             except Exception as e:
                 logger.error(f"Failed to parse {filename}: {e}")
             finally:
-                if os.path.exists(tmp.name):
-                    os.unlink(tmp.name)
+                if not self.is_local and target_path and os.path.exists(target_path):
+                    os.unlink(target_path)
                 import gc
                 gc.collect()
 
