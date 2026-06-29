@@ -19,19 +19,21 @@ def evaluate(p_theta, q_theta, val_loader, loss_fn, device, steps: int = 50):
     total_loss = 0.0
     
     # 1. Compute global variance of the validation set to fix the Huber threshold
-    val_z_list = []
-    logger.info("Computing global validation variance...")
+    logger.info("Computing global validation variance without memory buffering...")
+    var_sum = 0.0
+    var_count = 0
     with torch.inference_mode():
         for i, z_batch in enumerate(val_loader):
             if i >= 10: # Just sample 10 batches to estimate variance
                 break
-            val_z_list.append(z_batch)
+            # Compute variance directly on device for this single batch
+            z_batch_device = z_batch.to(device)
+            var_sum += torch.var(z_batch_device).item()
+            var_count += 1
+            del z_batch_device
             
-    val_z_tensor = torch.cat(val_z_list, dim=0).to(device)
-    delta_val = math.sqrt(torch.var(val_z_tensor).item() + cfg.HUBER_ETA)
+    delta_val = math.sqrt((var_sum / var_count) + cfg.HUBER_ETA)
     logger.info(f"Fixed Validation Delta: {delta_val:.4f}")
-    
-    del val_z_tensor
     
     # 2. Compute validation loss
     logger.info("Running validation pass...")
