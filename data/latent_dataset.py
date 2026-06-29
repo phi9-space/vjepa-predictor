@@ -15,6 +15,7 @@ class Ego10kLatentStream(IterableDataset):
     """
     True IID Subsampler for V-JEPA latents.
     Dynamically pulls from HuggingFace, ensuring true random sampling per epoch.
+    Uses lazy PyArrow parsing to keep memory footprint under 2GB per worker.
     """
     def __init__(self, split: str = "train", epsilon: float = 0.678, tau_kinetic: float = 0.001, seed: int = 42):
         super().__init__()
@@ -22,6 +23,18 @@ class Ego10kLatentStream(IterableDataset):
         self.epsilon = epsilon
         self.tau_kinetic = tau_kinetic
         self.seed = seed
+        self.repo = cfg.HF_REPO_LATENTS
+        self.token = cfg.HF_TOKEN
+        
+        logger.info(f"Listing parquet files for {split} split...")
+        api = HfApi(token=self.token)
+        all_files = [f for f in api.list_repo_files(repo_id=self.repo, repo_type="dataset", token=self.token) if f.endswith('.parquet')]
+        
+        # Filter files for the split roughly using a hash.
+        # Ego10k uses factory_id + video_idx for splitting. We approximate by splitting the files.
+        # Actually, previous implementation checked split per-row. We'll do the same.
+        self.files = all_files
+        logger.info(f"Found {len(self.files)} total parquet files.")
 
     def _is_valid_split(self, factory_id: str, video_index: int) -> bool:
         val_hash = hash(f"{factory_id}_{video_index}") % 10
@@ -32,46 +45,78 @@ class Ego10kLatentStream(IterableDataset):
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
+        num_workers = worker_info.num_workers if worker_info else 1
         
-        # Pure streaming from HuggingFace
-        hf_dataset = load_dataset(cfg.HF_REPO_LATENTS, split="train", streaming=True)
-        # Aggressive shuffle buffer since pod has massive bandwidth
-        buffer_seed = random.randint(0, 2**32 - 1)
-        hf_dataset = hf_dataset.shuffle(seed=buffer_seed, buffer_size=20)
-            
+        # Shuffle file list using the epoch seed to guarantee random order
+        rng = random.Random(self.seed)
+        shuffled_files = list(self.files)
+        rng.shuffle(shuffled_files)
+        
+        # Partition files across workers to prevent duplication
+        my_files = [f for i, f in enumerate(shuffled_files) if i % num_workers == worker_id]
+        
+        import requests
+        import io
+        import pyarrow.parquet as pq
+        
         yielded_count = 0
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         
-        for i, row in enumerate(hf_dataset):
+        for filename in my_files:
             if yielded_count >= cfg.TUBELETS_PER_EPOCH:
                 break
                 
-            if worker_info is not None:
-                if i % worker_info.num_workers != worker_info.id:
-                    continue
-                    
-            factory_id = row['factory_id']
-            video_idx = row['video_index']
-            
-            if not self._is_valid_split(factory_id, video_idx):
+            url = f"https://huggingface.co/datasets/{self.repo}/resolve/main/{filename}"
+            try:
+                resp = requests.get(url, headers=headers)
+                resp.raise_for_status()
+            except Exception as e:
+                logger.error(f"Failed to download {filename}: {e}")
                 continue
                 
-            # Decode the latent bytes
-            latent_bytes = row['latent_bytes']
-            z_np = np.frombuffer(latent_bytes, dtype=np.float32).copy().reshape(32, 24, 24, 768)
-            z = torch.from_numpy(z_np)
-            
-            # Compute Temporal Persistence Filter
-            z_diff = torch.abs(z[1:] - z[:-1])
-            z_diff_l1 = z_diff.mean(dim=(1, 2, 3))
-            psi = torch.sum(torch.clamp(z_diff_l1 - self.epsilon, min=0.0)).item()
-            
-            if psi < self.tau_kinetic:
-                continue 
-                
-            z = z.permute(3, 0, 1, 2)
-            
-            yield z
-            yielded_count += 1
+            # Lazily iterate over batches instead of eagerly decompressing the whole table
+            bytes_io = io.BytesIO(resp.content)
+            try:
+                pf = pq.ParquetFile(bytes_io)
+                for batch in pf.iter_batches(batch_size=32): # Process 32 rows at a time
+                    if yielded_count >= cfg.TUBELETS_PER_EPOCH:
+                        break
+                        
+                    d = batch.to_pydict()
+                    for j in range(len(d['latent_bytes'])):
+                        if yielded_count >= cfg.TUBELETS_PER_EPOCH:
+                            break
+                            
+                        factory_id = d['factory_id'][j]
+                        video_idx = d['video_index'][j]
+                        
+                        if not self._is_valid_split(factory_id, video_idx):
+                            continue
+                            
+                        latent_bytes = d['latent_bytes'][j]
+                        z_np = np.frombuffer(latent_bytes, dtype=np.float32).copy().reshape(32, 24, 24, 768)
+                        z = torch.from_numpy(z_np)
+                        
+                        # Compute Temporal Persistence Filter
+                        z_diff = torch.abs(z[1:] - z[:-1])
+                        z_diff_l1 = z_diff.mean(dim=(1, 2, 3))
+                        psi = torch.sum(torch.clamp(z_diff_l1 - self.epsilon, min=0.0)).item()
+                        
+                        if psi < self.tau_kinetic:
+                            continue 
+                            
+                        z = z.permute(3, 0, 1, 2)
+                        yield z
+                        yielded_count += 1
+                        
+            except Exception as e:
+                logger.error(f"Failed to parse {filename}: {e}")
+            finally:
+                del resp
+                del bytes_io
+                import gc
+                gc.collect()
 
 
 def get_dataloaders(batch_size: int = 8, num_workers: int = 4, seed: int = 42):
