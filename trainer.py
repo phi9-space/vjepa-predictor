@@ -99,9 +99,28 @@ def train():
     
     best_val_loss = float('inf')
     patience_counter = 0
+    start_epoch = 1
+    
+    # 5. Checkpoint Resume Logic
+    cfg.TRAINING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    resume_path = cfg.TRAINING_OUTPUT_DIR / "last_checkpoint.pt"
+    if resume_path.exists():
+        logger.info(f"Found existing checkpoint at {resume_path}. Resuming training!")
+        checkpoint = torch.load(resume_path, map_location=device)
+        p_theta.load_state_dict(checkpoint['p_theta'])
+        q_theta.load_state_dict(checkpoint['q_theta'])
+        if 'optimizer' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer'])
+        if 'scheduler' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        if 'epoch' in checkpoint:
+            start_epoch = checkpoint['epoch'] + 1
+        if 'best_val_loss' in checkpoint:
+            best_val_loss = checkpoint['best_val_loss']
+        logger.info(f"Resumed successfully from Epoch {start_epoch - 1} with Best Val Loss {best_val_loss:.4f}")
     
     logger.info("Starting Phase 2 Training (CNN Compressor)")
-    for epoch in range(1, cfg.EPOCHS + 1):
+    for epoch in range(start_epoch, cfg.EPOCHS + 1):
         p_theta.train()
         q_theta.train()
         
@@ -160,27 +179,64 @@ def train():
         val_loss = evaluate(p_theta, q_theta, val_loader, loss_fn, device, steps=20)
         logger.info(f"--- Epoch {epoch} Complete | Train Loss: {epoch_loss/steps_per_epoch:.4f} | Val Loss: {val_loss:.4f} ---")
         
-        # Early Stopping
+        # Early Stopping and Checkpointing
+        checkpoint_data = {
+            'epoch': epoch,
+            'train_loss': epoch_loss / steps_per_epoch,
+            'val_loss': val_loss,
+            'best_val_loss': min(val_loss, best_val_loss),
+            'p_theta': p_theta.state_dict(),
+            'q_theta': q_theta.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+        }
+        
+        # Save epoch checkpoint and last checkpoint
+        cfg.TRAINING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        epoch_checkpoint_name = f"checkpoint_epoch_{epoch}.pt"
+        torch.save(checkpoint_data, cfg.TRAINING_OUTPUT_DIR / epoch_checkpoint_name)
+        torch.save(checkpoint_data, cfg.TRAINING_OUTPUT_DIR / "last_checkpoint.pt")
+        
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            cfg.TRAINING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            torch.save({
-                'p_theta': p_theta.state_dict(),
-                'q_theta': q_theta.state_dict(),
-            }, cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt")
+            torch.save(checkpoint_data, cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt")
             logger.info("Saved new best model.")
-            
-            # Upload to HuggingFace
-            if cfg.HF_TOKEN and hasattr(cfg, 'HF_REPO_MODEL'):
+        else:
+            patience_counter += 1
+            if patience_counter >= cfg.PATIENCE:
+                logger.info(f"Thermodynamic Validation Plateau reached! No improvement for {cfg.PATIENCE} epochs.")
+                break
+                
+        # Upload to HuggingFace
+        if cfg.HF_TOKEN and hasattr(cfg, 'HF_REPO_MODEL'):
+            try:
+                logger.info(f"Uploading checkpoints to HuggingFace ({cfg.HF_REPO_MODEL}) on branch v2-pointwise-ffn...")
+                api = HfApi(token=cfg.HF_TOKEN)
+                api.create_repo(repo_id=cfg.HF_REPO_MODEL, private=True, exist_ok=True)
                 try:
-                    logger.info(f"Uploading checkpoint to HuggingFace ({cfg.HF_REPO_MODEL}) on branch v2-pointwise-ffn...")
-                    api = HfApi(token=cfg.HF_TOKEN)
-                    api.create_repo(repo_id=cfg.HF_REPO_MODEL, private=True, exist_ok=True)
-                    try:
-                        api.create_branch(repo_id=cfg.HF_REPO_MODEL, branch="v2-pointwise-ffn", exist_ok=True)
-                    except Exception as e:
-                        logger.warning(f"Branch creation warning: {e}")
+                    api.create_branch(repo_id=cfg.HF_REPO_MODEL, branch="v2-pointwise-ffn", exist_ok=True)
+                except Exception as e:
+                    logger.warning(f"Branch creation warning: {e}")
+                
+                # Upload epoch checkpoint
+                api.upload_file(
+                    path_or_fileobj=str(cfg.TRAINING_OUTPUT_DIR / epoch_checkpoint_name),
+                    path_in_repo=f"checkpoints/{epoch_checkpoint_name}",
+                    repo_id=cfg.HF_REPO_MODEL,
+                    repo_type="model",
+                    revision="v2-pointwise-ffn"
+                )
+                # Upload last_checkpoint
+                api.upload_file(
+                    path_or_fileobj=str(cfg.TRAINING_OUTPUT_DIR / "last_checkpoint.pt"),
+                    path_in_repo="last_checkpoint.pt",
+                    repo_id=cfg.HF_REPO_MODEL,
+                    repo_type="model",
+                    revision="v2-pointwise-ffn"
+                )
+                # If best, upload best_oracles.pt
+                if patience_counter == 0:
                     api.upload_file(
                         path_or_fileobj=str(cfg.TRAINING_OUTPUT_DIR / "best_oracles.pt"),
                         path_in_repo="best_oracles.pt",
@@ -188,14 +244,9 @@ def train():
                         repo_type="model",
                         revision="v2-pointwise-ffn"
                     )
-                    logger.info("Successfully uploaded best_oracles.pt to HuggingFace!")
-                except Exception as e:
-                    logger.error(f"Failed to upload model to HuggingFace: {e}")
-        else:
-            patience_counter += 1
-            if patience_counter >= cfg.PATIENCE:
-                logger.info(f"Thermodynamic Validation Plateau reached! No improvement for {cfg.PATIENCE} epochs.")
-                break
+                logger.info("Successfully uploaded checkpoints to HuggingFace!")
+            except Exception as e:
+                logger.error(f"Failed to upload model to HuggingFace: {e}")
 
 if __name__ == "__main__":
     train()
